@@ -7,7 +7,8 @@
 //   hikview <config> recordings <channel> [date]          - list recorded segments of a day
 //   hikview <config> export <channel> <from> <to> <file>  - download recording as Hikvision PS file
 // <time>: "YYYY-MM-DD HH:MM[:SS]", "HH:MM[:SS]" (today), "YYYY-MM-DD", or relative "-30s" "-10m" "-2h" "-1d".
-// <config> = text file: line 1 "host:port", line 2 user, line 3 password.
+// <config> = text file: line 1 "host:port", line 2 user, optional line 3 password (file must be mode 600).
+// Without line 3 the password comes from $HIK_PASSWORD, the system keyring (secret-tool), or a terminal prompt.
 
 #include <algorithm>
 #include <cerrno>
@@ -23,6 +24,10 @@
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <termios.h>
 #include <libgen.h>
 #include <linux/limits.h>
 
@@ -112,15 +117,77 @@ static void init_sdk() {
     NET_DVR_SetReconnect(10000, TRUE);
 }
 
+// Runs a command without a shell and returns the first line of its output ("" on any failure).
+static std::string run_line(std::vector<const char *> argv) {
+    int fd[2];
+    if (pipe(fd)) return "";
+    pid_t pid = fork();
+    if (pid == 0) {
+        int null = open("/dev/null", O_WRONLY);
+        dup2(fd[1], STDOUT_FILENO);
+        dup2(null, STDERR_FILENO);
+        close(fd[0]);
+        close(fd[1]);
+        argv.push_back(nullptr);
+        execvp(argv[0], (char *const *)argv.data());
+        _exit(127);
+    }
+    close(fd[1]);
+    std::string out;
+    char buf[256];
+    ssize_t n;
+    while (pid > 0 && (n = read(fd[0], buf, sizeof(buf))) > 0) out.append(buf, n);
+    close(fd[0]);
+    int status = 0;
+    if (pid < 0 || waitpid(pid, &status, 0) < 0 || !WIFEXITED(status) || WEXITSTATUS(status) != 0) return "";
+    return out.substr(0, out.find('\n'));
+}
+
+static std::string prompt_password(const std::string &who) {
+    FILE *tty = fopen("/dev/tty", "r+");
+    if (!tty) return "";
+    fprintf(tty, "password for %s: ", who.c_str());
+    fflush(tty);
+    termios old, quiet;
+    tcgetattr(fileno(tty), &old);
+    quiet = old;
+    quiet.c_lflag &= ~ECHO;
+    tcsetattr(fileno(tty), TCSAFLUSH, &quiet);
+    char buf[128] = {0};
+    bool ok = fgets(buf, sizeof(buf), tty) != nullptr;
+    tcsetattr(fileno(tty), TCSAFLUSH, &old);
+    fprintf(tty, "\n");
+    fclose(tty);
+    std::string pass = ok ? std::string(buf, strcspn(buf, "\r\n")) : "";
+    explicit_bzero(buf, sizeof(buf));
+    return pass;
+}
+
 static LONG login(const char *config, NET_DVR_DEVICEINFO_V40 *info) {
     std::ifstream f(config);
     std::string hostport, user, pass;
-    if (!std::getline(f, hostport) || !std::getline(f, user) || !std::getline(f, pass)) {
-        fprintf(stderr, "cannot read host:port / user / password from %s\n", config);
+    if (!std::getline(f, hostport) || !std::getline(f, user)) {
+        fprintf(stderr, "cannot read host:port / user from %s\n", config);
         exit(1);
     }
+    std::getline(f, pass);
     for (std::string *s : {&hostport, &user, &pass})
         while (!s->empty() && (s->back() == '\r' || s->back() == ' ')) s->pop_back();
+
+    struct stat st;
+    if (!pass.empty() && stat(config, &st) == 0 && (st.st_mode & 077)) {
+        fprintf(stderr, "%s contains a password but other users can read it; run: chmod 600 %s\n", config, config);
+        exit(1);
+    }
+    if (pass.empty() && getenv("HIK_PASSWORD")) pass = getenv("HIK_PASSWORD");
+    if (pass.empty())
+        pass = run_line({"secret-tool", "lookup", "service", "hikview", "address", hostport.c_str(), "user", user.c_str()});
+    if (pass.empty()) pass = prompt_password(user + "@" + hostport);
+    if (pass.empty()) {
+        fprintf(stderr, "no password for %s@%s: run 'hikview.sh setup', set HIK_PASSWORD, or start from a terminal\n",
+                user.c_str(), hostport.c_str());
+        exit(1);
+    }
 
     size_t colon = hostport.rfind(':');
     std::string host = colon == std::string::npos ? hostport : hostport.substr(0, colon);
@@ -135,6 +202,15 @@ static LONG login(const char *config, NET_DVR_DEVICEINFO_V40 *info) {
 
     fprintf(stderr, "logging in to %s:%d as %s ...\n", host.c_str(), port, user.c_str());
     LONG uid = NET_DVR_Login_V40(&li, info);
+    explicit_bzero(li.sPassword, sizeof(li.sPassword));
+    explicit_bzero(&pass[0], pass.size());
+    if (uid < 0 && NET_DVR_GetLastError() == NET_DVR_PASSWORD_ERROR) {
+        if (info->bySupportLock)
+            fprintf(stderr, "wrong user or password - %d attempt(s) left before the device locks this account\n",
+                    info->byRetryLoginTime);
+        else
+            fprintf(stderr, "wrong user or password - the device locks the account after several failed attempts\n");
+    }
     if (uid < 0) die_sdk("NET_DVR_Login_V40");
     return uid;
 }

@@ -30,13 +30,22 @@ sudo apt install build-essential unzip libx11-dev ffmpeg
    ```bash
    ./setup-sdk.sh ~/Downloads/EN-HCNetSDKV*_linux64.zip
    ```
-3. Create the config file: line 1 `host:port` (SDK port), line 2 user, line 3 password.
+3. Enter the NVR address and login:
    ```bash
-   mkdir -p ~/.config/hikview
-   install -m 600 config.example ~/.config/hikview/config
-   $EDITOR ~/.config/hikview/config
+   sudo apt install libsecret-tools   # optional, lets setup store the password in the system keyring
+   ./hikview.sh setup
    ```
-   Use `HIK_CONFIG=/path/to/file` to point at another device.
+   This writes `~/.config/hikview/config` (address and user only) and stores the password in the keyring (GNOME Keyring / KWallet via Secret Service). Without `secret-tool`, the password goes into the config file with mode 600.
+
+   The password is taken from the first of these that is available:
+   1. line 3 of the config file (refused unless the file is `chmod 600`)
+   2. the `HIK_PASSWORD` environment variable
+   3. the system keyring (`secret-tool lookup service hikview address <host:port> user <user>`)
+   4. a hidden prompt in the terminal
+
+   For several devices, keep one config per device and select it with `HIK_CONFIG=/path/to/file`. See `config.example` for the format.
+
+   > Hikvision devices lock the account for a while after several wrong passwords.
 4. Check it:
    ```bash
    ./hikview.sh list
