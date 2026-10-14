@@ -1,8 +1,5 @@
+/build/
+/dist/
 /sdk/
-/lib
-/hikview
 *.zip
-*.ps
-*.mp4
-*.jpg
-config
+.*.sw?

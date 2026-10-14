@@ -1,87 +1,78 @@
 # hikvision-sdk-viewer
 
-Live view and playback for Hikvision NVRs on Linux, using Hikvision's own Device Network SDK (HCNetSDK).
+`hikview` is a live view and playback app for Hikvision NVRs on Linux, built on Hikvision's own Device Network SDK (HCNetSDK).
 
-It talks to the NVR's **SDK port** (8000 by default). That's the same port iVMS-4200 uses, so it also works when RTSP and HTTP are not reachable, for example when only the SDK port is forwarded. Video is decoded and drawn by the SDK into plain X11 windows. There's no Qt, no browser and no transcoding: one C++ file and a small shell wrapper.
+It talks to the NVR's **SDK port** (8000 by default). That's the same port iVMS-4200 uses, so it also works when RTSP and HTTP are not reachable, for example when only the SDK port is forwarded. Video is decoded and drawn by the SDK into plain X11 windows. There's no Qt, no browser and no transcoding.
 
-- **Live grid**: all online cameras in one window. Click a camera to zoom it to full-quality video. Latency is about 1–2 s over the internet.
+- **Live grid** of all online cameras. Click a camera to zoom in at full quality. Latency is about 1–2 s over the internet.
 - **Playback** of NVR recordings from any time, with pause, seeking, speed, frame step and a live/playback toggle.
 - **Recordings list**: which time ranges of a day are recorded.
-- **Export** a time range to `.mp4` without re-encoding.
+- **Export** to `.mp4` without re-encoding, and **snapshots**.
+- **Several NVRs**, each with its own login, stored in the system keyring.
 
 Tested with a DS-7616NI-K2 NVR (16 IP channels, H.264 substreams and H.265 main streams) on Ubuntu 24.04 / X11.
 
-> Not affiliated with or endorsed by Hikvision. The Hikvision SDK is **not** included; you download it from Hikvision yourself and its license applies to it.
+> Not affiliated with or endorsed by Hikvision. The Hikvision SDK is **not** included and can't be. You download it from Hikvision once, and its license applies to it.
 
-## Requirements
+## Install
 
-- Linux x86_64 with an X11 session (Wayland via XWayland is untested)
-- `g++`, `make`, `unzip`, `libx11-dev`
-- `ffmpeg` (`ffmpeg`, `ffplay`, `ffprobe`): only for `export`, `snap` and single-camera `ffplay` view
-
-```bash
-sudo apt install build-essential unzip libx11-dev ffmpeg
-```
-
-## Setup
-
-1. Download **Device Network SDK_Linux64** from Hikvision's [HiTools / SDK page](https://www.hikvision.com/en/support/download/sdk/), accepting their license agreement. You get a file like `EN-HCNetSDKV6.1.11.40_build20260922_linux64.zip`.
-2. Unpack and build:
+1. Download `hikview-…-linux-x86_64.tar.gz` from [Releases](https://github.com/mykhi/hikvision-sdk-viewer/releases) and unpack it.
+2. Download **Device Network SDK_Linux64** from Hikvision's [SDK page](https://www.hikvision.com/en/support/download/sdk/), accepting their license. You get a file like `EN-HCNetSDKV6.1.11.40_build20260922_linux64.zip`. Don't unpack it.
+3. Run setup:
    ```bash
-   ./setup-sdk.sh ~/Downloads/EN-HCNetSDKV*_linux64.zip
+   sudo apt install unzip libsecret-tools   # libsecret-tools is optional, for the keyring
+   ./hikview setup --sdk ~/Downloads/EN-HCNetSDKV*_linux64.zip
    ```
-3. Enter the NVR address and login:
-   ```bash
-   sudo apt install libsecret-tools   # optional, lets setup store the password in the system keyring
-   ./hikview.sh setup
-   ```
-   This writes `~/.config/hikview/config` (address and user only) and stores the password in the keyring (GNOME Keyring / KWallet via Secret Service). Without `secret-tool`, the password goes into the config file with mode 600.
+   Setup does five things:
+   - installs `hikview` to `~/.local/bin`
+   - installs the SDK libraries to `~/.local/share/hikview/sdk`
+   - asks for the NVR address (`host:port`, the SDK port), user and password
+   - adds **Hikvision cameras** to the app menu
+   - connects once to check everything works
 
-   The password is taken from the first of these that is available:
-   1. line 3 of the config file (refused unless the file is `chmod 600`)
-   2. the `HIK_PASSWORD` environment variable
-   3. the system keyring (`secret-tool lookup service hikview address <host:port> user <user>`)
-   4. a hidden prompt in the terminal
+That's it. Start it from the app menu or run `hikview`.
 
-   For several devices, keep one config per device and select it with `HIK_CONFIG=/path/to/file`. See `config.example` for the format.
-
-   > Hikvision devices lock the account for a while after several wrong passwords.
-4. Check it:
-   ```bash
-   ./hikview.sh list
-   ```
-   ```
-   serial:          DS-7616NI-K2...
-   IP channels:     16 (first = 33)
-   NVR clock:       2026-10-14 08:41:46  (this PC: 08:41:48)
-   NVR NTP:         on (server ..., every 60 h)
-     channel  33  IP camera 10.0.0.75        time sync from NVR: default  online
-     ...
-   ```
+`hikview uninstall` removes the program, SDK and menu entries; add `--purge` to also delete saved logins.
 
 ## Usage
 
-### Live grid
+```
+hikview [-d NAME | -c FILE] [command]
+
+  (none), grid [CH...]      live view of all online cameras (or the given channels)
+  live CH                   one camera, full quality
+  play CH TIME              play back recordings
+  recordings CH [DATE]      recorded time ranges of a day (default today)
+  export CH FROM TO FILE    save a recording as .mp4 (needs ffmpeg) or raw .ps
+  snap CH FILE.jpg          snapshot taken by the NVR
+  list                      device info and channels
+  stream CH [sub]           raw MPEG-PS to stdout, e.g. | ffplay -f mpeg -i -
+  setup [--sdk ZIP]         install / add or change a device login
+  uninstall [--purge]       remove hikview
+```
+
+`TIME` and `DATE` accept `"2026-10-13 21:00"`, `21:00` (today), `2026-10-13`, or relative `-90s`, `-10m`, `-2h`, `-1d`.
+
+Channel numbers come from `hikview list`; IP cameras on NVRs usually start at 33.
 
 ```bash
-./hikview.sh grid            # all online cameras
-./hikview.sh grid 33 35 41   # selected channels
+hikview                                   # live grid
+hikview live 35
+hikview play 33 -10m
+hikview recordings 33 -1d
+hikview export 33 "2026-10-13 21:00" "2026-10-13 21:05" clip.mp4
 ```
+
+### Live grid keys
 
 | Key / mouse | Action |
 |---|---|
-| click a camera | zoom to it (switches to the main stream); click again to go back |
+| click a camera | zoom to it (main stream); click again to go back |
 | `f` | fullscreen |
 | `m` | motion / smart-event boxes drawn by the SDK on or off (off by default) |
 | `q`, Esc | quit |
 
-### Playback
-
-```bash
-./hikview.sh play 33 -10m                 # 10 minutes ago
-./hikview.sh play 33 21:00                # today 21:00
-./hikview.sh play 33 "2026-10-13 21:00"
-```
+### Playback keys
 
 The window title shows the playback time, speed and state.
 
@@ -96,29 +87,41 @@ The window title shows the playback time, speed and state.
 | `l` | switch to live and back (resumes where you were); ← or ↓ in live = instant replay |
 | `f` / `m` / `q` | fullscreen / overlays / quit |
 
-### Recordings and export
+### Several NVRs
 
 ```bash
-./hikview.sh recordings 33               # today
-./hikview.sh recordings 33 2026-10-13    # or -1d
-./hikview.sh export 33 "2026-10-13 21:00" "2026-10-13 21:05" clip.mp4
+hikview -d office setup      # adds a device "office" and an app menu entry for it
+hikview -d office            # live grid of the office NVR
+hikview -d office play 33 -1h
 ```
 
-### Single camera through ffplay
+Device configs live in `~/.config/hikview/devices/`. Each is a small text file: line 1 `host:port`, line 2 user, and an optional line 3 password. The program refuses a password in the file unless the file is `chmod 600`. `-c FILE` uses such a file directly.
+
+The password is taken from the first of these that's available:
+1. the config file
+2. `$HIK_PASSWORD`
+3. the system keyring (GNOME Keyring / KWallet via `secret-tool`)
+4. a hidden prompt in the terminal
+
+## Build from source
 
 ```bash
-./hikview.sh 33          # main stream
-./hikview.sh 33 sub      # substream
-./hikview.sh snap 33 frame.jpg
+sudo apt install build-essential libx11-dev
+unzip EN-HCNetSDKV*_linux64.zip '*/incEn/*' -d sdk   # only HCNetSDK.h is needed to build
+make            # -> build/hikview
+make dist       # -> dist/hikview-<version>-linux-x86_64.tar.gz
 ```
 
-`hikview <config> stream <channel>` writes the raw MPEG-PS stream to stdout, so you can pipe it into anything that reads `ffmpeg -f mpeg`.
+The binary doesn't link against the SDK. It loads `libhcnetsdk.so` from `~/.local/share/hikview/sdk` at startup, which is why it can be shipped on its own. Releases are built by GitHub Actions on Ubuntu 22.04 when a `v*` tag is pushed.
 
 ## Notes
 
 - The SDK prints library-loading messages on startup (`load libavcodec ... failed`, `Cannot load libcuda.so.1`). They're harmless: it falls back to its own decoders and VA-API.
-- Times are local time; the NVR clock is assumed to be in the same time zone as the PC (`list` shows both).
+- Times are local time; the NVR clock is assumed to be in the same time zone (`hikview list` shows both clocks).
+- When started from the app menu there's no terminal, so the password must be saved (keyring or config file) and errors aren't shown. Run `hikview` in a terminal to see them.
+- Hikvision devices lock the account for a while after several wrong passwords.
 - Exposing the SDK port to the internet is risky: older Hikvision firmware has known remote vulnerabilities. Prefer a VPN (e.g. WireGuard on the router) and keep the firmware updated.
+- X11 only; Wayland sessions via XWayland are untested.
 
 ## License
 

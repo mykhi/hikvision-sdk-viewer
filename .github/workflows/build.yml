@@ -1,0 +1,69 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    # Oldest supported runner, so the binary runs on older glibc versions too.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # git describe needs the tags
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libx11-dev
+
+      - name: Cache Hikvision SDK
+        id: sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: sdk.zip
+          key: hikvision-sdk-${{ hashFiles('.github/hikvision-sdk-url') }}
+
+      # Only HCNetSDK.h is used for building; nothing from the SDK goes into the release.
+      - name: Download Hikvision SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        run: curl -fsSL -A "Mozilla/5.0" -e https://www.hikvision.com/ -o sdk.zip "$(cat .github/hikvision-sdk-url)"
+
+      - name: Extract SDK header
+        run: unzip -q -o sdk.zip '*/incEn/*' -d sdk
+
+      - name: Build
+        run: make dist VERSION="$(git describe --tags --always)"
+
+      - name: Smoke test
+        run: |
+          build/hikview --version
+          build/hikview --help > /dev/null
+          echo "requires up to $(objdump -T build/hikview | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -n 1)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hikview-linux-x86_64
+          path: dist/*.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: hikview-linux-x86_64
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: gh release create "$TAG" ./*.tar.gz --repo "$REPO" --title "$TAG" --generate-notes
